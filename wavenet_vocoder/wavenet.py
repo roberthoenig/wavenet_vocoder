@@ -105,6 +105,8 @@ class WaveNet(nn.Module):
                  cin_channels=-1, gin_channels=-1, n_speakers=None,
                  weight_normalization=True,
                  upsample_conditional_features=False,
+                 upsample_strides=None,
+                 upsample_kernel_sizes=None,
                  upsample_scales=None,
                  freq_axis_kernel_size=3,
                  scalar_input=False,
@@ -155,16 +157,28 @@ class WaveNet(nn.Module):
         # Upsample conv net
         if upsample_conditional_features:
             self.upsample_conv = nn.ModuleList()
-            for s in upsample_scales:
-                freq_axis_padding = (freq_axis_kernel_size - 1) // 2
-                convt = ConvTranspose2d(1, 1, (freq_axis_kernel_size, s),
-                                        padding=(freq_axis_padding, 0),
-                                        dilation=1, stride=(1, s),
-                                        weight_normalization=weight_normalization)
-                self.upsample_conv.append(convt)
-                # assuming we use [0, 1] scaled features
-                # this should avoid non-negative upsampling output
-                self.upsample_conv.append(nn.ReLU(inplace=True))
+            if upsample_scales is not None:
+                for s in upsample_scales:
+                    freq_axis_padding = (freq_axis_kernel_size - 1) // 2
+                    convt = ConvTranspose2d(1, 1, (freq_axis_kernel_size, s),
+                                            padding=(freq_axis_padding, 0),
+                                            dilation=1, stride=(1, s),
+                                            weight_normalization=weight_normalization)
+                    self.upsample_conv.append(convt)
+                    # assuming we use [0, 1] scaled features
+                    # this should avoid non-negative upsampling output
+                    self.upsample_conv.append(nn.ReLU(inplace=True))
+            else:
+                for stride, upsample_kernel_size in zip(upsample_strides, upsample_kernel_sizes):
+                    freq_axis_padding = (freq_axis_kernel_size - 1) // 2
+                    convt = ConvTranspose2d(1, 1, (freq_axis_kernel_size, upsample_kernel_size),
+                                            padding=(freq_axis_padding, 0),
+                                            dilation=1, stride=(1, stride),
+                                            weight_normalization=weight_normalization)
+                    self.upsample_conv.append(convt)
+                    # assuming we use [0, 1] scaled features
+                    # this should avoid non-negative upsampling output
+                    self.upsample_conv.append(nn.ReLU(inplace=True))
         else:
             self.upsample_conv = None
 
@@ -362,9 +376,9 @@ class WaveNet(nn.Module):
                     x[:, sample] = 1.0
             outputs += [x.data]
         # T x B x C
-        outputs = torch.stack(outputs)
+        # outputs = torch.stack(outputs)
         # B x C x T
-        outputs = outputs.transpose(0, 1).transpose(1, 2).contiguous()
+        # outputs = outputs.transpose(0, 1).transpose(1, 2).contiguous()
 
         self.clear_buffer()
         return outputs
@@ -433,6 +447,8 @@ class WaveNet(nn.Module):
                 c = f(c)
             # B x C x T
             c = c.squeeze(1)
+            print("c.size()", c.size())
+            print("T", T)
             assert c.size(-1) == T
         if c is not None and c.size(-1) == T:
             c = c.transpose(1, 2).contiguous()
@@ -453,8 +469,10 @@ class WaveNet(nn.Module):
 
         current_input = initial_input
         recovered_data = np.zeros(length, dtype=np.int32)
+        all_probs = []
         for t in tqdm(range(length)):
             if t % 40 == 0:
+                torch.save(all_probs, "lik_pop_probs.pt")
                 print("iteration", t)
             if test_inputs is not None and t < test_inputs.size(1):
                 current_input = test_inputs[:, t, :].unsqueeze(1)
@@ -498,7 +516,13 @@ class WaveNet(nn.Module):
                     x[:, sample] = 1.0
             outputs += [x.data]
             probs = F.softmax(outputs[-1], dim=-1).numpy()
-            state, scalar_input = categoricals_pop(probs, precision)(state)
+            all_probs.append(probs)
+            try:
+                state, scalar_input = categoricals_pop(probs, precision)(state)
+                print(scalar_input.item())
+            except Exception as e:
+                print("e", e)
+                print("state", state)
             scalar_input = scalar_input[0]
             recovered_data[t] = scalar_input
 
@@ -508,7 +532,7 @@ class WaveNet(nn.Module):
         outputs = outputs.transpose(0, 1).transpose(1, 2).contiguous()
 
         self.clear_buffer()
-        return state, recovered_data
+        return state, recovered_data, all_probs
 
     def clear_buffer(self):
         self.first_conv.clear_buffer()
