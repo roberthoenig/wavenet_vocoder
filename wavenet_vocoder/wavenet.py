@@ -13,6 +13,7 @@ from .modules import Embedding
 from .modules import Conv1d1x1, ResidualConv1dGLU, ConvTranspose2d
 from .mixture import sample_from_discretized_mix_logistic
 
+import logging
 
 def _expand_global_features(B, T, g, bct=True):
     """Expand global conditioning features to all time steps
@@ -335,8 +336,8 @@ class WaveNet(nn.Module):
         current_input = initial_input
 
         for t in tqdm(range(all_x.size(-1))):
-            if t % 40 == 0:
-                print("iteration", t)
+            if t % 100 == 0:
+                logging.info(f"incremental_forward iteration {t}")
             if test_inputs is not None and t < test_inputs.size(1):
                 current_input = test_inputs[:, t, :].unsqueeze(1)
             else:
@@ -346,7 +347,6 @@ class WaveNet(nn.Module):
             # Conditioning features for single time step
             ct = None if c is None else c[:, t, :].unsqueeze(1)
             gt = None if g is None else g_btc[:, t, :].unsqueeze(1)
-            # print("ct", ct)
             x = current_input
             x = self.first_conv.incremental_forward(x)
             skips = None
@@ -447,8 +447,6 @@ class WaveNet(nn.Module):
                 c = f(c)
             # B x C x T
             c = c.squeeze(1)
-            print("c.size()", c.size())
-            print("T", T)
             assert c.size(-1) == T
         if c is not None and c.size(-1) == T:
             c = c.transpose(1, 2).contiguous()
@@ -471,9 +469,8 @@ class WaveNet(nn.Module):
         recovered_data = np.zeros(length, dtype=np.int32)
         all_probs = []
         for t in tqdm(range(length)):
-            if t % 40 == 0:
-                torch.save(all_probs, "lik_pop_probs.pt")
-                print("iteration", t)
+            if t % 100 == 0:
+                logging.info(f"incremental_forward_recover iteration {t}")
             if test_inputs is not None and t < test_inputs.size(1):
                 current_input = test_inputs[:, t, :].unsqueeze(1)
             else:
@@ -519,7 +516,7 @@ class WaveNet(nn.Module):
             all_probs.append(probs)
             try:
                 state, scalar_input = categoricals_pop(probs, precision)(state)
-                print(scalar_input.item())
+                logging.debug(scalar_input.item())
             except Exception as e:
                 print("e", e)
                 print("state", state)
